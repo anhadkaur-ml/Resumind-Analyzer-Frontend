@@ -138,7 +138,8 @@ function ResumePreview({data}:{data:ResumeData}){
   const displayedSkills=data.skillItems.length?data.skillItems.join("  •  "):data.skills;
   // Keep every resume section visible so the preview also acts as a clear
   // checklist while the user moves through the builder steps.
-  return <article className="mx-auto min-h-[900px] max-w-[700px] bg-white px-10 py-12 shadow-lg sm:px-14">
+  // The resume-print-area class lets print CSS exclude the surrounding builder UI.
+  return <article className="resume-print-area mx-auto min-h-[900px] max-w-[700px] bg-white px-10 py-12 shadow-lg sm:px-14">
     <header className="border-b-2 border-slate-900 pb-6 text-center"><h1 className="font-serif text-3xl font-bold uppercase tracking-wide">{data.fullName||"Your Name"}</h1><p className="mt-2 text-sm font-semibold text-blue-700">{data.targetRole||"Target Role"}</p></header>
     <PreviewSection title="Personal Details"><p>{contact||"Add your email, phone number, and location."}</p></PreviewSection>
     <PreviewSection title="Professional Summary"><p>{data.summary||"Add a focused professional summary highlighting your background, skills, and strongest value."}</p></PreviewSection>
