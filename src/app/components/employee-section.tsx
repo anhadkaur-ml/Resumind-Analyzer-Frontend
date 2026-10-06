@@ -1,6 +1,5 @@
 "use client";
-/* eslint-disable @typescript-eslint/no-unused-vars -- legacy standalone Copilot implementation is no longer routed */
-
+/* eslint-disable @typescript-eslint/no-unused-vars -- legacy preview helpers remain during the staged UI migration */
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
@@ -8,8 +7,17 @@ import { api, clearStoredSession, getApiErrorMessage, isUnauthorized } from "../
 import { NotificationBell } from "./notification-bell";
 import { ResumeBuilderHome } from "./resume-builder";
 import { InterviewPracticeHome } from "./interview-practice-home";
-export type EmployeeSectionName = "reports" | "compare-resumes" | "resume-builder" | "interview-practice" | "settings" | "help";
-type Profile = { full_name: string; email: string; role: "employee" | "hr" };
+export type EmployeeSectionName = "reports" | "compare-resumes" | "resume-builder" | "interview-practice" | "copilot" | "settings" | "help";
+type Profile = {
+  full_name: string;
+  email: string;
+  role: "employee" | "hr";
+  email_notifications_enabled: boolean;
+  email_resume_analysis: boolean;
+  email_resume_builder: boolean;
+  email_interview_results: boolean;
+};
+type EmailPreferences = Pick<Profile, "email_notifications_enabled" | "email_resume_analysis" | "email_resume_builder" | "email_interview_results">;
 type Analysis = { id: number; original_filename: string; job_title: string; overall_score: number; status: string; created_at: string };
 type JobApplication = { id: number; company: string; role: string; appliedOn: string; status: "Saved" | "Applied" | "Interview" | "Offer" | "Rejected"; resume: string; nextStep: string };
 type ComparisonAnalysis = Analysis & { impact_score:number; clarity_score:number; ats_score:number; detailed_report?:{ strengths?:string[]; matched_keywords?:string[]; missing_keywords?:string[] } };
@@ -21,6 +29,7 @@ const nav: { label: string; icon: IconName; href: string; section?: EmployeeSect
   { label: "Compare Resumes", icon: "versions", href: "/employee/compare-resumes", section: "compare-resumes" },
   { label: "Resume Builder", icon: "document", href: "/employee/resume-builder", section: "resume-builder" },
   { label: "Interview Practice", icon: "calendar", href: "/employee/interview-practice", section: "interview-practice" },
+  { label: "Career Copilot", icon: "spark", href: "/employee/copilot", section: "copilot" },
 ];
 
 const titles: Record<EmployeeSectionName, [string, string]> = {
@@ -28,11 +37,12 @@ const titles: Record<EmployeeSectionName, [string, string]> = {
   "compare-resumes": ["Compare Resumes", "Compare two analyzed resumes and choose the stronger version."],
   "resume-builder": ["Resume Builder", "Create, edit, and manage tailored professional resumes."],
   "interview-practice": ["Interview Practice", "Build confidence with focused, AI-guided practice sessions."],
+  copilot: ["Career Copilot", "Get practical AI guidance for your career questions."],
   settings: ["Settings", "Manage your profile, preferences, and privacy."],
   help: ["Help Center", "Find answers and get the support you need."],
 };
 
-export function EmployeeSection({ section }: { section: EmployeeSectionName }) {
+export function EmployeeSection({ section, interviewView = "dashboard" }: { section: EmployeeSectionName; interviewView?: "dashboard" | "quick" | "setup" | "history" }) {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
@@ -63,7 +73,7 @@ export function EmployeeSection({ section }: { section: EmployeeSectionName }) {
       <nav className="grid grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-1" aria-label="Employee navigation">{nav.map((item) => <NavItem key={item.label} {...item} active={item.section === section} />)}</nav>
       <div className="mt-auto hidden lg:block"><p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[.18em] text-slate-400">Account</p><NavItem label="Settings" icon="settings" href="/employee/settings" active={section === "settings"} /><NavItem label="Help center" icon="help" href="/employee/help" active={section === "help"} /><div className="mt-5 border-t border-slate-100 pt-5"><div className="flex items-center gap-3 rounded-xl p-2"><Avatar text={initials.slice(0,1)} /><div className="min-w-0 flex-1"><strong className="block truncate text-xs">{profile?.full_name || "Loading profile..."}</strong><span className="block truncate text-[10px] text-slate-500">{profile?.email || "Employee"}</span></div></div><button type="button" onClick={() => { clearSession(); router.replace("/"); router.refresh(); }} className="mt-2 w-full rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-500 hover:bg-red-50 hover:text-red-700">Log out</button></div></div>
     </aside>
-    <section className="min-w-0 lg:col-start-2"><TopBar initials={initials} section={section} /><div className="w-full px-5 py-4 sm:px-6 lg:px-7">{section === "reports" && <Reports analyses={analyses} loading={analysesLoading} onDeleted={(id) => setAnalyses((items) => items.filter((item) => item.id !== id))} />}{section === "compare-resumes" && <CompareResumes />}{section === "resume-builder" && <ResumeBuilderHome/>}{section === "interview-practice" && <InterviewPracticeHome />}{section === "settings" && <Settings profile={profile} />}{section === "help" && <Help />}</div></section>
+    <section className="min-w-0 lg:col-start-2"><TopBar initials={initials} section={section} /><div className="w-full px-5 py-4 sm:px-6 lg:px-7">{section === "reports" && <Reports analyses={analyses} loading={analysesLoading} onDeleted={(id) => setAnalyses((items) => items.filter((item) => item.id !== id))} />}{section === "compare-resumes" && <CompareResumes />}{section === "resume-builder" && <ResumeBuilderHome/>}{section === "interview-practice" && <InterviewPracticeHome view={interviewView} />}{section === "copilot" && <Copilot/>}{section === "settings" && <Settings key={profile?.email||"loading"} profile={profile} />}{section === "help" && <Help />}</div></section>
   </div></main>;
 }
 
@@ -206,9 +216,71 @@ function Tip({text}:{text:string}) { return <div className="flex gap-2"><span cl
 function Practice({icon,title,detail}:{icon:IconName;title:string;detail:string}) { return <button className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200"><span className="grid size-11 place-items-center rounded-xl bg-blue-50 text-blue-700"><Icon name={icon}/></span><span className="flex-1"><strong className="block text-xs">{title}</strong><small className="mt-1 block text-[10px] text-slate-400">{detail}</small></span><Icon name="arrow"/></button>; }
 function Session({title,date,score}:{title:string;date:string;score:string}) { return <div className="mt-4 flex items-center gap-3 border-t border-slate-100 pt-4"><span className="grid size-8 place-items-center rounded-lg bg-slate-50 text-slate-500"><Icon name="play"/></span><div className="min-w-0 flex-1"><strong className="block truncate text-[10px]">{title}</strong><span className="text-[9px] text-slate-400">{date}</span></div><b className="text-xs text-blue-700">{score}</b></div>; }
 
-function Copilot() { const [messages,setMessages]=useState(["I’m your Career Copilot. What would you like to work on today?"]); const [input,setInput]=useState(""); function send(e:FormEvent){e.preventDefault();if(!input.trim())return;setMessages([...messages,input.trim(),"That’s a great focus. I can help you turn it into a clear, practical next step. Since this is a frontend preview, connect the AI service when you’re ready for live coaching."]);setInput("");} return <div className="grid min-h-[620px] gap-5 xl:grid-cols-[280px_1fr]"><aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><button className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-blue-700 text-xs font-bold text-white"><Icon name="plus"/> New conversation</button><p className="mb-2 mt-6 text-[9px] font-bold uppercase tracking-wider text-slate-400">Recent</p>{["Plan my next career move","Improve my portfolio story","Prepare for salary negotiation"].map((item,i)=><button key={item} className={`mb-1 flex w-full items-center gap-2 rounded-lg p-3 text-left text-[10px] ${i===0?"bg-blue-50 font-bold text-blue-700":"text-slate-600 hover:bg-slate-50"}`}><Icon name="message"/>{item}</button>)}<div className="mt-6 rounded-xl bg-amber-50 p-4"><Icon name="spark"/><strong className="mt-2 block text-xs">Weekly focus</strong><p className="mt-1 text-[10px] leading-4 text-slate-600">Complete one interview practice session.</p></div></aside><section className="flex min-h-[620px] flex-col rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex items-center gap-3 border-b border-slate-100 p-5"><span className="grid size-10 place-items-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white"><Icon name="spark"/></span><div><strong className="block text-sm">Resumind Career Copilot</strong><span className="flex items-center gap-1 text-[9px] text-emerald-600"><i className="size-1.5 rounded-full bg-emerald-500"/> Ready to help</span></div></div><div className="flex-1 space-y-4 overflow-auto p-6">{messages.map((message,i)=><div key={i} className={`flex ${i%3===1?"justify-end":"justify-start"}`}><div className={`max-w-xl rounded-2xl px-4 py-3 text-xs leading-5 ${i%3===1?"rounded-br-sm bg-blue-700 text-white":"rounded-bl-sm bg-slate-100 text-slate-700"}`}>{message}</div></div>)}</div><div className="grid grid-cols-1 gap-2 px-6 pb-3 sm:grid-cols-3">{["Review my career goals","Help tailor my resume","Practice an interview"].map(x=><button key={x} onClick={()=>setInput(x)} className="rounded-lg border border-slate-200 px-3 py-2 text-[9px] font-semibold text-slate-600 hover:border-blue-200">{x}</button>)}</div><form onSubmit={send} className="flex gap-2 border-t border-slate-100 p-4"><input value={input} onChange={e=>setInput(e.target.value)} placeholder="Ask your Career Copilot..." className="h-11 flex-1 rounded-xl bg-slate-50 px-4 text-xs outline-none ring-blue-100 focus:ring-2"/><button aria-label="Send message" className="grid size-11 place-items-center rounded-xl bg-blue-700 text-white"><Icon name="send"/></button></form></section></div>; }
+function Copilot() { const [messages,setMessages]=useState<{role:"user"|"assistant";content:string}[]>([{role:"assistant",content:"I’m your Career Copilot. What would you like to work on today?"}]); const [input,setInput]=useState(""); const [busy,setBusy]=useState(false); const [error,setError]=useState(""); async function send(e:FormEvent){e.preventDefault();const question=input.trim();if(!question||busy)return;const history=messages.slice(1).slice(-8);setMessages(current=>[...current,{role:"user",content:question}]);setInput("");setBusy(true);setError("");try{const {data}=await api.post<{answer:string}>("/api/resumes/career-copilot/",{question,history});setMessages(current=>[...current,{role:"assistant",content:data.answer}]);}catch(reason){setError(getApiErrorMessage(reason,"Career Copilot is temporarily unavailable. Please try again."));}finally{setBusy(false);}} function reset(){setMessages([{role:"assistant",content:"I’m your Career Copilot. What would you like to work on today?"}]);setError("");setInput("");} return <div className="grid min-h-[620px] gap-5 xl:grid-cols-[280px_1fr]"><aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><button type="button" onClick={reset} className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-blue-700 text-xs font-bold text-white"><Icon name="plus"/> New conversation</button><p className="mb-2 mt-6 text-[9px] font-bold uppercase tracking-wider text-slate-400">Try asking</p>{["Plan my next career move","Improve my portfolio story","Prepare for salary negotiation"].map(item=><button key={item} onClick={()=>setInput(item)} className="mb-1 flex w-full items-center gap-2 rounded-lg p-3 text-left text-[10px] text-slate-600 hover:bg-slate-50"><Icon name="message"/>{item}</button>)}</aside><section className="flex min-h-[620px] flex-col rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex items-center gap-3 border-b border-slate-100 p-5"><span className="grid size-10 place-items-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white"><Icon name="spark"/></span><div><strong className="block text-sm">Resumind Career Copilot</strong><span className="text-[9px] text-emerald-600">{busy?"Thinking…":"Ready to help"}</span></div></div><div className="flex-1 space-y-4 overflow-auto p-6">{messages.map((message,i)=><div key={i} className={`flex ${message.role==="user"?"justify-end":"justify-start"}`}><div className={`max-w-xl whitespace-pre-wrap rounded-2xl px-4 py-3 text-xs leading-5 ${message.role==="user"?"rounded-br-sm bg-blue-700 text-white":"rounded-bl-sm bg-slate-100 text-slate-700"}`}>{message.content}</div></div>)}{busy&&<p className="text-xs text-slate-400">Career Copilot is preparing a response…</p>}{error&&<p className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{error}</p>}</div><form onSubmit={send} className="flex gap-2 border-t border-slate-100 p-4"><input value={input} onChange={e=>setInput(e.target.value)} placeholder="Ask your Career Copilot..." className="h-11 flex-1 rounded-xl bg-slate-50 px-4 text-xs outline-none ring-blue-100 focus:ring-2"/><button disabled={busy||!input.trim()} aria-label="Send message" className="grid size-11 place-items-center rounded-xl bg-blue-700 text-white disabled:bg-slate-300"><Icon name="send"/></button></form></section></div>; }
 
-function Settings({profile}:{profile:Profile|null}) { const [saved,setSaved]=useState(false); return <div className="grid gap-5 xl:grid-cols-[220px_1fr]"><aside className="h-fit rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">{[["user","Profile"],["bell","Notifications"],["lock","Privacy & security"],["palette","Appearance"]].map(([icon,label],i)=><button key={label} className={`flex w-full items-center gap-3 rounded-lg p-3 text-left text-xs font-semibold ${i===0?"bg-blue-50 text-blue-700":"text-slate-600 hover:bg-slate-50"}`}><Icon name={icon as IconName}/>{label}</button>)}</aside><section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"><div className="flex items-center gap-4 border-b border-slate-100 pb-6"><Avatar text={profile?.full_name.charAt(0)||"E"} large/><div><h2 className="text-lg font-bold">Personal information</h2><p className="mt-1 text-[10px] text-slate-500">This information appears in your Resumind workspace.</p></div></div><div className="mt-6 grid gap-5 sm:grid-cols-2"><Field label="Full name" value={profile?.full_name||"Employee User"}/><Field label="Work email" value={profile?.email||"employee@company.com"}/><Field label="Job title" value="Product Designer"/><Field label="Location" value="Bengaluru, India"/><label className="sm:col-span-2"><span className="text-[10px] font-bold">Professional bio</span><textarea defaultValue="Product designer focused on thoughtful, user-centered digital experiences." className="mt-2 h-24 w-full resize-none rounded-lg border border-slate-200 p-3 text-xs outline-none focus:border-blue-400"/></label></div><div className="mt-6 flex items-center justify-end gap-3 border-t border-slate-100 pt-6">{saved&&<span className="text-[10px] font-bold text-emerald-600">Changes saved</span>}<button onClick={()=>setSaved(true)} className="h-10 rounded-lg bg-blue-700 px-5 text-xs font-bold text-white">Save changes</button></div></section></div>; }
+function Settings({profile}:{profile:Profile|null}) {
+  const [tab,setTab]=useState<"profile"|"notifications">("profile");
+  const [preferences,setPreferences]=useState<EmailPreferences>({
+    email_notifications_enabled:profile?.email_notifications_enabled??true,
+    email_resume_analysis:profile?.email_resume_analysis??true,
+    email_resume_builder:profile?.email_resume_builder??true,
+    email_interview_results:profile?.email_interview_results??true,
+  });
+  const [saving,setSaving]=useState(false);
+  const [message,setMessage]=useState("");
+
+  function updatePreference(key:keyof EmailPreferences,value:boolean){
+    setPreferences(current=>({...current,[key]:value}));
+    setMessage("");
+  }
+
+  async function savePreferences(){
+    setSaving(true);
+    setMessage("");
+    try {
+      const {data}=await api.patch<Profile>("/api/auth/profile/",preferences);
+      setPreferences({
+        email_notifications_enabled:data.email_notifications_enabled,
+        email_resume_analysis:data.email_resume_analysis,
+        email_resume_builder:data.email_resume_builder,
+        email_interview_results:data.email_interview_results,
+      });
+      setMessage("Email preferences saved.");
+    } catch (error) {
+      setMessage(getApiErrorMessage(error,"Email preferences could not be saved."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="grid gap-5 xl:grid-cols-[220px_1fr]">
+    <aside className="h-fit rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+      <button type="button" onClick={()=>setTab("profile")} className={`flex w-full items-center gap-3 rounded-lg p-3 text-left text-xs font-semibold ${tab==="profile"?"bg-blue-50 text-blue-700":"text-slate-600 hover:bg-slate-50"}`}><Icon name="user"/>Profile</button>
+      <button type="button" onClick={()=>setTab("notifications")} className={`flex w-full items-center gap-3 rounded-lg p-3 text-left text-xs font-semibold ${tab==="notifications"?"bg-blue-50 text-blue-700":"text-slate-600 hover:bg-slate-50"}`}><Icon name="bell"/>Notifications</button>
+    </aside>
+    <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+      {tab==="profile"?<>
+        <div className="flex items-center gap-4 border-b border-slate-100 pb-6"><Avatar text={profile?.full_name.charAt(0)||"E"} large/><div><h2 className="text-lg font-bold">Personal information</h2><p className="mt-1 text-[10px] text-slate-500">Your registered Resumind account details.</p></div></div>
+        <div className="mt-6 grid gap-5 sm:grid-cols-2"><ReadOnlyField label="Full name" value={profile?.full_name||"Loading..."}/><ReadOnlyField label="Work email" value={profile?.email||"Loading..."}/></div>
+      </>:<>
+        <div className="border-b border-slate-100 pb-6"><h2 className="text-lg font-bold">Email notifications</h2><p className="mt-1 text-[10px] text-slate-500">Choose which completed workflows should send an email to your registered address.</p></div>
+        <div className="mt-6 divide-y divide-slate-100 rounded-xl border border-slate-200">
+          <PreferenceToggle label="All email notifications" detail="Master switch for every Resumind workflow email." checked={preferences.email_notifications_enabled} onChange={value=>updatePreference("email_notifications_enabled",value)}/>
+          <PreferenceToggle label="Resume Analysis completed" detail="Receive an email when your private analysis report is ready." checked={preferences.email_resume_analysis} disabled={!preferences.email_notifications_enabled} onChange={value=>updatePreference("email_resume_analysis",value)}/>
+          <PreferenceToggle label="Resume Builder completed" detail="Receive an email when a generated resume is ready." checked={preferences.email_resume_builder} disabled={!preferences.email_notifications_enabled} onChange={value=>updatePreference("email_resume_builder",value)}/>
+          <PreferenceToggle label="Interview result ready" detail="Receive an email when interview feedback is available." checked={preferences.email_interview_results} disabled={!preferences.email_notifications_enabled} onChange={value=>updatePreference("email_interview_results",value)}/>
+        </div>
+        <div className="mt-6 flex items-center justify-end gap-3"><span className={`text-[10px] font-semibold ${message.includes("saved")?"text-emerald-600":"text-red-600"}`}>{message}</span><button type="button" onClick={()=>void savePreferences()} disabled={!profile||saving} className="h-10 rounded-lg bg-blue-700 px-5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{saving?"Saving...":"Save preferences"}</button></div>
+      </>}
+    </section>
+  </div>;
+}
+
+function PreferenceToggle({label,detail,checked,disabled=false,onChange}:{label:string;detail:string;checked:boolean;disabled?:boolean;onChange:(value:boolean)=>void}) {
+  return <div className={`flex items-center justify-between gap-5 p-5 ${disabled?"opacity-50":""}`}><div><strong className="block text-xs">{label}</strong><p className="mt-1 text-[10px] leading-4 text-slate-500">{detail}</p></div><button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={()=>onChange(!checked)} className={`relative h-6 w-11 shrink-0 rounded-full transition ${checked?"bg-blue-700":"bg-slate-300"} disabled:cursor-not-allowed`}><span className={`absolute top-1 size-4 rounded-full bg-white shadow transition ${checked?"left-6":"left-1"}`}/></button></div>;
+}
+
+function ReadOnlyField({label,value}:{label:string;value:string}) { return <label><span className="text-[10px] font-bold">{label}</span><input value={value} readOnly className="mt-2 h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs text-slate-600"/></label>; }
 
 function Help() { return <><section className="rounded-2xl bg-gradient-to-r from-slate-950 to-blue-950 px-6 py-10 text-center text-white sm:px-12"><span className="mx-auto grid size-11 place-items-center rounded-xl bg-white/10"><Icon name="help"/></span><h2 className="mt-4 text-2xl font-bold">How can we help?</h2><p className="mt-2 text-xs text-slate-300">Search guides, common questions, and product tips.</p><div className="relative mx-auto mt-6 max-w-xl"><span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"><Icon name="search"/></span><input placeholder="Search the Help Center..." className="h-12 w-full rounded-xl bg-white pl-11 pr-4 text-xs text-slate-950 outline-none"/></div></section><div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><HelpCard icon="document" title="Resume Analyzer" detail="Uploading, scores, and recommendations"/><HelpCard icon="chart" title="Reports & versions" detail="Organize and compare your resumes"/><HelpCard icon="mic" title="Interview practice" detail="Sessions, feedback, and progress"/><HelpCard icon="spark" title="Ask AI" detail="Get help from the AI resume coach"/></div><div className="mt-5 grid gap-5 xl:grid-cols-[1fr_320px]"><section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h2 className="text-lg font-bold">Frequently asked questions</h2>{["How is my resume score calculated?","What file formats can I upload?","Can I tailor a resume to a specific role?","Is my resume data private?","How do I export or download a report?"].map(q=><button key={q} className="flex w-full items-center justify-between border-b border-slate-100 py-4 text-left text-xs font-semibold last:border-0">{q}<Icon name="plus"/></button>)}</section><aside className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><span className="grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-700"><Icon name="mail"/></span><h2 className="mt-4 text-lg font-bold">Still need help?</h2><p className="mt-2 text-[10px] leading-5 text-slate-500">Our support team is here to help with account and product questions.</p><button className="mt-5 h-10 w-full rounded-lg bg-blue-700 text-xs font-bold text-white">Contact support</button><p className="mt-3 text-center text-[9px] text-slate-400">Typical response within one business day</p></aside></div></>; }
 

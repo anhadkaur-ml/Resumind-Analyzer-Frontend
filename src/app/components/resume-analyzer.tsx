@@ -8,6 +8,7 @@ import { NotificationBell } from "./notification-bell";
 type Profile = { full_name: string; email: string; role: "employee" | "hr" };
 type DetailedReport = { summary: string; strengths: string[]; weaknesses: string[]; matched_keywords: string[]; missing_keywords: string[]; section_feedback: { section: string; feedback: string }[]; ats_issues: string[]; bullet_rewrites: string[]; improved_summary: string; action_plan: string[] };
 type Analysis = { id: number; original_filename: string; job_title: string; overall_score: number; impact_score: number; clarity_score: number; ats_score: number; status: string; recommendations: string[]; detailed_report: DetailedReport; created_at: string };
+type BuilderResumeSource = { id: number; title: string; target_role: string; completion: number };
 type IconName = "home" | "document" | "chart" | "versions" | "calendar" | "spark" | "settings" | "help" | "bell" | "upload" | "shield" | "check" | "arrow" | "file" | "target" | "history";
 
 const navigation: { label: string; icon: IconName; href?: string; badge?: string }[] = [
@@ -23,6 +24,7 @@ export function ResumeAnalyzer() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [builderResume, setBuilderResume] = useState<BuilderResumeSource | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(0);
@@ -40,6 +42,15 @@ export function ResumeAnalyzer() {
       .catch((reason) => { if (isUnauthorized(reason)) { clearSession(); router.replace("/"); } });
   }, [router]);
 
+  useEffect(() => {
+    // Resume Builder passes only its database ID; Django still verifies ownership.
+    const builderResumeId = new URLSearchParams(window.location.search).get("builderResumeId");
+    if (!builderResumeId) return;
+    api.get<BuilderResumeSource>(`/api/resumes/builder/${builderResumeId}/`)
+      .then(({data})=>{setBuilderResume(data);setJobTitle((current)=>current||data.target_role);setFile(null);})
+      .catch((reason)=>setError(getApiErrorMessage(reason,"The selected Builder resume could not be loaded.")));
+  }, []);
+
   function clearSession() { clearStoredSession(); }
   function logout() { clearSession(); router.replace("/"); router.refresh(); }
   function selectFile(candidate?: File) {
@@ -48,23 +59,19 @@ export function ResumeAnalyzer() {
     const extension = candidate.name.split(".").pop()?.toLowerCase();
     if (!extension || !["pdf", "doc", "docx"].includes(extension)) { setError("Please upload a PDF, DOC, or DOCX file."); setFile(null); return; }
     if (candidate.size > 10 * 1024 * 1024) { setError("Your file is larger than the 10 MB limit."); setFile(null); return; }
-    setFile(candidate);
+    setFile(candidate); setBuilderResume(null);
   }
   function onInput(event: ChangeEvent<HTMLInputElement>) { selectFile(event.target.files?.[0]); }
   function onDrop(event: DragEvent<HTMLDivElement>) { event.preventDefault(); setDragging(false); selectFile(event.dataTransfer.files[0]); }
   async function analyze() {
-    if (!file || !jobTitle.trim() || isAnalyzing) return;
-    const body = new FormData();
-    body.append("resume", file);
-    body.append("job_title", jobTitle.trim());
-    body.append("job_description", jobDescription.trim());
+    if ((!file && !builderResume) || !jobTitle.trim() || isAnalyzing) return;
     setError(""); setAnalysis(null); setProgress(20); setIsAnalyzing(true);
     try {
-      const response = await api.post<Analysis>("/api/resumes/analyses/", body, {
-        onUploadProgress: (event) => {
-          if (event.total) setProgress(Math.min(60, 20 + Math.round((event.loaded / event.total) * 40)));
-        },
-      });
+      const response = builderResume
+        ? await api.post<Analysis>(`/api/resumes/builder/${builderResume.id}/analyze/`, {job_title:jobTitle.trim(),job_description:jobDescription.trim()})
+        : await api.post<Analysis>("/api/resumes/analyses/", (()=>{const body=new FormData();body.append("resume",file as File);body.append("job_title",jobTitle.trim());body.append("job_description",jobDescription.trim());return body;})(), {
+            onUploadProgress: (event) => {if (event.total) setProgress(Math.min(60,20+Math.round((event.loaded/event.total)*40)));},
+          });
       setProgress(70);
       setAnalysis(response.data); setProgress(100);
       router.push(`/employee/reports/${response.data.id}`);
@@ -101,7 +108,7 @@ export function ResumeAnalyzer() {
                 <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-600">Step 1</p><h2 className="mt-1 text-lg font-bold">Upload your resume</h2><p className="mt-1 text-[10px] text-slate-500">We&apos;ll scan your experience, skills, and impact.</p></div><span className="grid size-9 place-items-center rounded-xl bg-blue-50 text-blue-700"><Icon name="upload" /></span></div>
               <div onDragEnter={() => setDragging(true)} onDragLeave={() => setDragging(false)} onDragOver={(event) => event.preventDefault()} onDrop={onDrop} className={`mt-5 rounded-xl border-2 border-dashed px-4 py-6 text-center transition ${dragging ? "border-blue-500 bg-blue-50" : file ? "border-emerald-300 bg-emerald-50/40" : "border-slate-200 bg-slate-50/60"}`}>
                 <input ref={inputRef} type="file" accept=".pdf,.doc,.docx" onChange={onInput} className="sr-only" />
-                {file ? <><span className="mx-auto grid size-11 place-items-center rounded-xl bg-white text-emerald-600 shadow-sm"><Icon name="file" /></span><strong className="mt-3 block truncate text-xs">{file.name}</strong><span className="mt-1 block text-[10px] text-slate-500">{(file.size / 1024 / 1024).toFixed(2)} MB · Ready to analyze</span><button type="button" onClick={() => inputRef.current?.click()} className="mt-3 text-[10px] font-bold text-blue-700">Choose a different file</button></> : <><span className="mx-auto grid size-11 place-items-center rounded-xl bg-white text-blue-700 shadow-sm"><Icon name="upload" /></span><strong className="mt-3 block text-xs">Drop your resume here</strong><span className="mt-1 block text-[10px] text-slate-500">or browse from your computer</span><button type="button" onClick={() => inputRef.current?.click()} className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-bold shadow-sm hover:border-blue-300 hover:text-blue-700">Browse files</button><span className="mt-3 block text-[9px] text-slate-400">PDF, DOC, or DOCX · Max 10 MB</span></>}
+                {builderResume ? <><span className="mx-auto grid size-11 place-items-center rounded-xl bg-white text-emerald-600 shadow-sm"><Icon name="file" /></span><strong className="mt-3 block truncate text-xs">{builderResume.title}</strong><span className="mt-1 block text-[10px] text-slate-500">Resume Builder · {builderResume.completion}% complete · Ready to analyze</span><button type="button" onClick={() => inputRef.current?.click()} className="mt-3 text-[10px] font-bold text-blue-700">Upload a different resume</button></> : file ? <><span className="mx-auto grid size-11 place-items-center rounded-xl bg-white text-emerald-600 shadow-sm"><Icon name="file" /></span><strong className="mt-3 block truncate text-xs">{file.name}</strong><span className="mt-1 block text-[10px] text-slate-500">{(file.size / 1024 / 1024).toFixed(2)} MB · Ready to analyze</span><button type="button" onClick={() => inputRef.current?.click()} className="mt-3 text-[10px] font-bold text-blue-700">Choose a different file</button></> : <><span className="mx-auto grid size-11 place-items-center rounded-xl bg-white text-blue-700 shadow-sm"><Icon name="upload" /></span><strong className="mt-3 block text-xs">Drop your resume here</strong><span className="mt-1 block text-[10px] text-slate-500">or browse from your computer</span><button type="button" onClick={() => inputRef.current?.click()} className="mt-3 rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-bold shadow-sm hover:border-blue-300 hover:text-blue-700">Browse files</button><span className="mt-3 block text-[9px] text-slate-400">PDF, DOC, or DOCX · Max 10 MB</span></>}
               </div>
               {error && <p role="alert" className="mt-3 text-xs font-semibold text-red-600">{error}</p>}
               <div className="mt-4 flex items-start gap-2 rounded-lg bg-emerald-50 px-3 py-2.5 text-emerald-800"><Icon name="shield" /><p className="text-[9px] leading-4"><strong>Your document stays private.</strong> It is used only to create your personal report.</p></div>
@@ -115,7 +122,7 @@ export function ResumeAnalyzer() {
             </div>
             <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
               {progress > 0 && <div className="mb-4"><div className="flex justify-between text-[10px] font-bold"><span>{progress === 100 ? "Review ready" : "Analyzing your resume..."}</span><span className="text-blue-700">{progress}%</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${progress}%` }} /></div></div>}
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-[10px] text-slate-500"><strong className="text-slate-700">Ready when both steps are complete.</strong><br />Your report typically takes less than a minute.</p><button type="button" disabled={!file || !jobTitle.trim() || isAnalyzing} onClick={analyze} className="flex h-11 min-w-52 items-center justify-center gap-2 rounded-lg bg-blue-700 px-6 text-xs font-bold text-white shadow-md shadow-blue-700/15 transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">{isAnalyzing ? "Analyzing..." : analysis ? "Analyze again" : "Analyze resume"}<Icon name="arrow" /></button></div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-[10px] text-slate-500"><strong className="text-slate-700">Ready when both steps are complete.</strong><br />Your report typically takes less than a minute.</p><button type="button" disabled={(!file && !builderResume) || !jobTitle.trim() || isAnalyzing} onClick={analyze} className="flex h-11 min-w-52 items-center justify-center gap-2 rounded-lg bg-blue-700 px-6 text-xs font-bold text-white shadow-md shadow-blue-700/15 transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none">{isAnalyzing ? "Analyzing..." : analysis ? "Analyze again" : "Analyze resume"}<Icon name="arrow" /></button></div>
             </div>
           </section>
           {analysis && <AnalysisReport analysis={analysis} />}

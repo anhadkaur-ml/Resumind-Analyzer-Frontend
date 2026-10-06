@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   api,
   clearStoredSession,
@@ -24,6 +24,8 @@ type InterviewSession = {
   interview_type: string;
   target_role: string;
   experience_level: string;
+  resume_id?: number | null;
+  resume_title?: string;
   questions: string[];
   question_source: "groq" | "fallback";
   current_index: number;
@@ -58,10 +60,26 @@ export default function InterviewPracticeSessionPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const answerDraftKey = useCallback((questionIndex: number) => {
+    return `interviewAnswerDraft:${id}:${questionIndex}`;
+  }, [id]);
+
+  function clearCurrentDraft(currentSession = session) {
+    if (currentSession && typeof window !== "undefined") {
+      localStorage.removeItem(answerDraftKey(currentSession.current_index));
+    }
+  }
+
   useEffect(() => {
     api
       .get<InterviewSession>(`/api/interviews/sessions/${id}/`)
-      .then(({ data }) => setSession(data))
+      .then(({ data }) => {
+        setSession(data);
+        if (data.status === "in_progress") {
+          // Restore text after refresh, navigation, or an expired login session.
+          setAnswer(localStorage.getItem(answerDraftKey(data.current_index)) ?? "");
+        }
+      })
       .catch((requestError) => {
         if (isUnauthorized(requestError)) {
           clearStoredSession();
@@ -76,7 +94,7 @@ export default function InterviewPracticeSessionPage() {
         );
       })
       .finally(() => setLoading(false));
-  }, [id, router]);
+  }, [answerDraftKey, id, router]);
 
   async function submitAnswer() {
     if (!answer.trim() || !session) return;
@@ -88,9 +106,18 @@ export default function InterviewPracticeSessionPage() {
         `/api/interviews/sessions/${session.id}/answer/`,
         { answer: answer.trim() },
       );
+      clearCurrentDraft(session);
       setSession(data);
-      setAnswer("");
+      setAnswer(
+        data.status === "in_progress"
+          ? localStorage.getItem(answerDraftKey(data.current_index)) ?? ""
+          : "",
+      );
     } catch (requestError) {
+      if (isUnauthorized(requestError)) {
+        setError("Your session expired. Your answer is saved in this browser; sign in again to continue.");
+        return;
+      }
       setError(
         getApiErrorMessage(requestError, "Your answer could not be saved."),
       );
@@ -101,15 +128,25 @@ export default function InterviewPracticeSessionPage() {
 
   async function skipQuestion() {
     if (!session || submitting) return;
+    if (answer.trim() && !window.confirm("Skip this question and discard the answer you typed?")) return;
     setSubmitting(true);
     setError("");
     try {
       const { data } = await api.post<InterviewSession>(
         `/api/interviews/sessions/${session.id}/skip/`,
       );
+      clearCurrentDraft(session);
       setSession(data);
-      setAnswer("");
+      setAnswer(
+        data.status === "in_progress"
+          ? localStorage.getItem(answerDraftKey(data.current_index)) ?? ""
+          : "",
+      );
     } catch (requestError) {
+      if (isUnauthorized(requestError)) {
+        setError("Your session expired. Sign in again to continue; any typed answer remains saved.");
+        return;
+      }
       setError(
         getApiErrorMessage(requestError, "The question could not be skipped."),
       );
@@ -132,6 +169,7 @@ export default function InterviewPracticeSessionPage() {
       const { data } = await api.post<InterviewSession>(
         `/api/interviews/sessions/${session.id}/end/`,
       );
+      clearCurrentDraft(session);
       setSession(data);
     } catch (requestError) {
       setError(
@@ -159,7 +197,7 @@ export default function InterviewPracticeSessionPage() {
   if (loading)
     return (
       <main className="grid min-h-screen place-items-center bg-slate-50 text-sm text-slate-500">
-        Loading your interview...
+        <div className="text-center"><span className="mx-auto block size-8 animate-spin rounded-full border-2 border-slate-200 border-t-blue-700" /><strong className="mt-4 block text-slate-700">Loading your interview</strong><p className="mt-1 text-xs">Restoring your questions and saved progress…</p></div>
       </main>
     );
   if (!session)
@@ -179,8 +217,8 @@ export default function InterviewPracticeSessionPage() {
 
   const completed = session.status === "completed";
   const question = session.questions[session.current_index];
-  return (
   const result = session.result_summary ?? {};
+  return (
     <main className="min-h-screen bg-slate-50 text-slate-950">
       <header className="border-b border-slate-200 bg-white px-5 py-4 sm:px-8">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
@@ -194,7 +232,7 @@ export default function InterviewPracticeSessionPage() {
               >
                 {session.question_source === "groq"
                   ? "AI-generated questions"
-                  : "Fallback questions"}
+                  : "Legacy practice questions"}
               </span>
             </div>
             <h1 className="mt-1 text-xl font-bold">
@@ -203,6 +241,11 @@ export default function InterviewPracticeSessionPage() {
             <p className="mt-1 text-xs text-slate-500">
               {session.experience_level}
             </p>
+            {session.resume_title && (
+              <span className="mt-2 inline-flex rounded-full bg-blue-50 px-2.5 py-1 text-[9px] font-bold text-blue-700">
+                Personalized with: {session.resume_title}
+              </span>
+            )}
           </div>
           {completed ? (
             <Link
@@ -225,7 +268,7 @@ export default function InterviewPracticeSessionPage() {
       </header>
       <div className="mx-auto max-w-6xl p-5 sm:p-8">
         {completed ? (
-          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+          <section className="interview-result-print-area rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
             <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">
               Interview completed
             </p>
@@ -253,7 +296,7 @@ export default function InterviewPracticeSessionPage() {
             </div>
             <div className="mt-6 flex flex-col gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div><strong className="block text-xs">Session summary</strong><span className="mt-1 block text-[10px] text-slate-600">Answered {result.answered_count ?? session.answers.filter((item) => item.answer).length} · Skipped {result.skipped_count ?? session.answers.filter((item) => !item.answer).length} · Total {result.total_questions ?? session.questions.length}</span></div>
-              <button type="button" onClick={() => void retryInterview()} disabled={submitting} className="h-10 rounded-lg bg-blue-700 px-5 text-xs font-bold text-white disabled:opacity-50">{submitting ? "Preparing..." : "Retry interview"}</button>
+              <div className="print-hidden flex gap-2"><button type="button" onClick={()=>window.print()} className="h-10 rounded-lg border border-blue-200 bg-white px-5 text-xs font-bold text-blue-700">Download result PDF</button><button type="button" onClick={() => void retryInterview()} disabled={submitting} className="h-10 rounded-lg bg-blue-700 px-5 text-xs font-bold text-white disabled:opacity-50">{submitting ? "Preparing..." : "Retry interview"}</button></div>
             </div>
             <h2 className="mt-8 text-lg font-bold">Answer feedback</h2>
             <div className="mt-4 space-y-3">
@@ -266,8 +309,10 @@ export default function InterviewPracticeSessionPage() {
                     <strong className="text-sm">
                       {item.question_index + 1}. {item.question}
                     </strong>
-                    <b className="text-blue-700">{item.score}/100</b>
+                    <div className="shrink-0 text-right"><b className="block text-blue-700">{item.score}/100</b><span className={`mt-1 inline-flex rounded-full px-2 py-1 text-[8px] font-bold ${!item.answer?"bg-slate-100 text-slate-500":item.score>=75?"bg-emerald-50 text-emerald-700":item.score>=55?"bg-amber-50 text-amber-700":"bg-red-50 text-red-700"}`}>{!item.answer?"Skipped":item.score>=75?"Strong":item.score>=55?"Developing":"Needs practice"}</span></div>
                   </div>
+                  <div className="mt-3 rounded-lg bg-slate-50 p-3"><span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Your answer</span><p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-slate-700">{item.answer||"No answer was submitted."}</p></div>
+                  <p className="mt-3 text-[9px] font-bold uppercase tracking-wider text-slate-400">Feedback</p>
                   <p className="mt-2 text-xs leading-5 text-slate-600">
                     {item.feedback}
                   </p>
@@ -308,15 +353,17 @@ export default function InterviewPracticeSessionPage() {
                 <span className="text-xs font-bold">Your answer</span>
                 <textarea
                   value={answer}
-                  onChange={(event) => setAnswer(event.target.value)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setAnswer(value);
+                    localStorage.setItem(answerDraftKey(session.current_index), value);
+                  }}
                   className="mt-2 h-56 w-full resize-none rounded-xl border border-slate-200 p-4 text-sm leading-6 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50"
                   placeholder="Give a clear example, explain what you did, and describe the result..."
                 />
               </label>
               {error && (
-                <p className="mt-3 text-xs font-semibold text-red-600">
-                  {error}
-                </p>
+                <div className="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2"><p className="text-xs font-semibold text-red-700">{error}</p>{isUnauthorizedErrorText(error) && <Link href="/" className="mt-2 inline-block text-[10px] font-bold text-blue-700">Sign in again →</Link>}</div>
               )}
               <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <span className="text-xs text-slate-400">
@@ -380,4 +427,8 @@ function ResultList({ title, items, tone }: { title: string; items: string[]; to
     <h2 className="text-xs font-bold">{title}</h2>
     <ul className="mt-3 space-y-2">{items.map((item) => <li key={item} className="flex gap-2 text-[10px] leading-4"><span>•</span><span>{item}</span></li>)}</ul>
   </section>;
+}
+
+function isUnauthorizedErrorText(message: string) {
+  return message.toLowerCase().includes("session expired");
 }

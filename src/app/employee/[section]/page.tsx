@@ -1,6 +1,6 @@
 import { EmployeeSection } from "../../components/employee-section";
 
-const sections = ["reports", "compare-resumes", "resume-builder", "interview-practice", "settings", "help"] as const;
+const sections = ["reports", "compare-resumes", "resume-builder", "interview-practice", "copilot", "settings", "help"] as const;
 type Section = (typeof sections)[number];
 
 export function generateStaticParams() {

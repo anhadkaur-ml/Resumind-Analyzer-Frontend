@@ -1,11 +1,25 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { api, clearStoredSession, getApiErrorMessage, isUnauthorized } from "../../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  api,
+  clearStoredSession,
+  getApiErrorMessage,
+  isUnauthorized,
+} from "../../lib/api";
 
-type InterviewType = "behavioral" | "role_specific" | "technical" | "hr_screening";
-type SessionPayload = { interview_type: InterviewType; target_role: string; experience_level: string };
+type InterviewType =
+  "behavioral" | "role_specific" | "technical" | "hr_screening";
+type InterviewView = "dashboard" | "quick" | "setup" | "history";
+type SessionPayload = {
+  interview_type: InterviewType;
+  target_role: string;
+  experience_level: string;
+  question_count: 5 | 10 | 15 | 20;
+  resume_id?: number;
+};
 type InterviewSession = SessionPayload & {
   id: number;
   current_index: number;
@@ -13,127 +27,700 @@ type InterviewSession = SessionPayload & {
   status: "in_progress" | "completed";
   overall_score: number | null;
   created_at: string;
+  resume_title?: string;
+};
+type SavedResume = {
+  id: number;
+  title: string;
+  target_role: string;
+  status: "Draft" | "Completed";
+  skill_items: string[];
 };
 
-const quickPractices: Array<SessionPayload & { title: string; detail: string; duration: string; icon: string }> = [
-  { title: "Behavioral warm-up", detail: "Practice one clear STAR response", duration: "5 min", icon: "💬", interview_type: "behavioral", target_role: "General professional", experience_level: "Mid-level (3–5 years)" },
-  { title: "Technical sprint", detail: "Sharpen problem-solving answers", duration: "10 min", icon: "</>", interview_type: "technical", target_role: "Software Engineer", experience_level: "Mid-level (3–5 years)" },
-  { title: "HR screening", detail: "Prepare your introduction and goals", duration: "8 min", icon: "HR", interview_type: "hr_screening", target_role: "General professional", experience_level: "Entry level (0–2 years)" },
+const types: Array<{ label: string; value: InterviewType; detail: string }> = [
+  {
+    label: "Behavioral",
+    value: "behavioral",
+    detail: "Experience and workplace situations",
+  },
+  {
+    label: "Role-specific",
+    value: "role_specific",
+    detail: "Questions tailored to your target role",
+  },
+  {
+    label: "Technical",
+    value: "technical",
+    detail: "Skills and problem-solving questions",
+  },
+  {
+    label: "HR screening",
+    value: "hr_screening",
+    detail: "Introduction, goals and culture fit",
+  },
+];
+const quick: Array<
+  SessionPayload & {
+    title: string;
+    detail: string;
+    duration: string;
+    icon: string;
+  }
+> = [
+  {
+    title: "Behavioral warm-up",
+    detail: "Practice clear STAR-based responses",
+    duration: "5 questions",
+    icon: "B",
+    interview_type: "behavioral",
+    target_role: "General professional",
+    experience_level: "Mid-level (3–5 years)",
+    question_count: 5,
+  },
+  {
+    title: "Technical sprint",
+    detail: "Sharpen technical and problem-solving answers",
+    duration: "10 questions",
+    icon: "T",
+    interview_type: "technical",
+    target_role: "Software Engineer",
+    experience_level: "Mid-level (3–5 years)",
+    question_count: 10,
+  },
+  {
+    title: "HR screening",
+    detail: "Prepare your introduction and career goals",
+    duration: "5 questions",
+    icon: "HR",
+    interview_type: "hr_screening",
+    target_role: "General professional",
+    experience_level: "Entry level (0–2 years)",
+    question_count: 5,
+  },
+];
+const roles = [
+  "Software Engineer",
+  "Frontend Developer",
+  "Backend Developer",
+  "Full Stack Developer",
+  "Python Developer",
+  "Data Analyst",
+  "Data Scientist",
+  "Machine Learning Engineer",
+  "DevOps Engineer",
+  "UI/UX Designer",
+  "Product Designer",
+  "Product Manager",
+  "Business Analyst",
+  "HR Executive",
 ];
 
-const interviewTypes: Array<{ label: string; value: InterviewType; detail: string }> = [
-  { label: "Behavioral", value: "behavioral", detail: "Experience and workplace situations" },
-  { label: "Role-specific", value: "role_specific", detail: "Questions tailored to your target role" },
-  { label: "Technical", value: "technical", detail: "Skills and problem-solving questions" },
-  { label: "HR screening", value: "hr_screening", detail: "Introduction, goals and culture fit" },
-];
-
-const targetRoles = ["Software Engineer", "Frontend Developer", "Backend Developer", "Full Stack Developer", "Python Developer", "Data Analyst", "Data Scientist", "Machine Learning Engineer", "DevOps Engineer", "UI/UX Designer", "Product Designer", "Product Manager", "Business Analyst", "HR Executive"];
-
-export function InterviewPracticeHome() {
+export function InterviewPracticeHome({
+  view = "dashboard",
+}: {
+  view?: InterviewView;
+}) {
   const router = useRouter();
+  const [sessions, setSessions] = useState<InterviewSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [historyError, setHistoryError] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
   const [type, setType] = useState<InterviewType>("behavioral");
-  const [role, setRole] = useState("Product Designer");
+  const [role, setRole] = useState("Software Engineer");
   const [customRole, setCustomRole] = useState("");
   const [experience, setExperience] = useState("Mid-level (3–5 years)");
-  const [busyKey, setBusyKey] = useState("");
-  const [error, setError] = useState("");
-  const [sessions, setSessions] = useState<InterviewSession[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState("");
+  const [questionCount, setQuestionCount] = useState<5 | 10 | 15 | 20>(10);
+  const [savedResumes, setSavedResumes] = useState<SavedResume[]>([]);
+  const [selectedResumeId, setSelectedResumeId] = useState("");
+  const [resumesLoading, setResumesLoading] = useState(true);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyStatus, setHistoryStatus] = useState<"all" | "in_progress" | "completed">("all");
+  const [historyType, setHistoryType] = useState<"all" | InterviewType>("all");
+  const [historySort, setHistorySort] = useState<"newest" | "oldest">("newest");
+  const [lastAttempt, setLastAttempt] = useState<SessionPayload | null>(null);
 
   useEffect(() => {
-    async function loadSessions() {
-      try {
-        const { data } = await api.get<InterviewSession[]>("/api/interviews/sessions/");
-        setSessions(data);
-      } catch (requestError) {
+    api
+      .get<InterviewSession[]>("/api/interviews/sessions/")
+      .then(({ data }) => setSessions(data))
+      .catch((requestError) => {
         if (isUnauthorized(requestError)) {
           clearStoredSession();
           router.replace("/");
           return;
         }
-        setHistoryError(getApiErrorMessage(requestError, "Recent practice sessions could not be loaded."));
-      } finally {
-        setHistoryLoading(false);
-      }
-    }
-    void loadSessions();
+        setHistoryError(
+          getApiErrorMessage(
+            requestError,
+            "Practice sessions could not be loaded.",
+          ),
+        );
+      })
+      .finally(() => setLoading(false));
   }, [router]);
 
-  async function createSession(payload: SessionPayload, key: string) {
-    setBusyKey(key);
+  useEffect(() => {
+    api
+      .get<SavedResume[]>("/api/resumes/builder/")
+      .then(({ data }) =>
+        setSavedResumes(data.filter((resume) => resume.status === "Completed")),
+      )
+      .catch(() => setSavedResumes([]))
+      .finally(() => setResumesLoading(false));
+  }, []);
+
+  const stats = useMemo(() => {
+    const completed = sessions.filter((item) => item.status === "completed");
+    const scores = completed
+      .map((item) => item.overall_score)
+      .filter((score): score is number => score !== null);
+    return {
+      completed: completed.length,
+      active: sessions.length - completed.length,
+      average: scores.length
+        ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+        : 0,
+    };
+  }, [sessions]);
+
+  const filteredSessions = useMemo(() => {
+    const query = historySearch.trim().toLowerCase();
+    return sessions
+      .filter((session) => historyStatus === "all" || session.status === historyStatus)
+      .filter((session) => historyType === "all" || session.interview_type === historyType)
+      .filter((session) => !query || [session.target_role, session.experience_level, session.resume_title ?? "", types.find((item) => item.value === session.interview_type)?.label ?? ""].some((value) => value.toLowerCase().includes(query)))
+      .sort((first, second) => historySort === "newest" ? new Date(second.created_at).getTime() - new Date(first.created_at).getTime() : new Date(first.created_at).getTime() - new Date(second.created_at).getTime());
+  }, [historySearch, historySort, historyStatus, historyType, sessions]);
+
+  async function start(payload: SessionPayload, key: string) {
+    setLastAttempt(payload);
+    setBusy(key);
     setError("");
     try {
-      const { data } = await api.post<{ id: number }>("/api/interviews/sessions/", payload);
+      const { data } = await api.post<{ id: number }>(
+        "/api/interviews/sessions/",
+        payload,
+      );
       router.push(`/employee/interview-practice/${data.id}`);
     } catch (requestError) {
-      setError(getApiErrorMessage(requestError, "The interview could not be started. Please try again."));
+      setError(
+        getApiErrorMessage(
+          requestError,
+          "The interview could not be started. Please try again.",
+        ),
+      );
     } finally {
-      setBusyKey("");
+      setBusy("");
     }
   }
 
-  function startCustomSession() {
-    const selectedRole = role === "Other" ? customRole.trim() : role;
-    if (!selectedRole) return;
-    void createSession({ interview_type: type, target_role: selectedRole, experience_level: experience }, "custom");
+  async function deleteSession(sessionId: number) {
+    if (!window.confirm("Delete this interview session and all of its saved answers? This cannot be undone.")) return;
+    setHistoryError("");
+    try {
+      await api.delete(`/api/interviews/sessions/${sessionId}/`);
+      setSessions((current) => current.filter((session) => session.id !== sessionId));
+    } catch (requestError) {
+      setHistoryError(getApiErrorMessage(requestError, "The interview session could not be deleted. Please try again."));
+    }
   }
+
+  if (view === "quick")
+    return (
+      <Page
+        title="Quick Practice"
+        subtitle="Start a short, focused session using ready-made settings."
+      >
+        <div className="grid gap-4 md:grid-cols-3">
+          {quick.map((item) => {
+            const key = `quick-${item.interview_type}`;
+            return (
+              <button
+                key={item.title}
+                disabled={Boolean(busy)}
+                onClick={() => void start(item, key)}
+                className="group rounded-2xl border border-slate-200 bg-white p-6 text-left shadow-sm hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md disabled:opacity-60"
+              >
+                <span className="grid size-11 place-items-center rounded-xl bg-blue-50 text-xs font-black text-blue-700">
+                  {item.icon}
+                </span>
+                <strong className="mt-5 block text-sm">{item.title}</strong>
+                <p className="mt-2 min-h-10 text-[10px] leading-5 text-slate-500">
+                  {item.detail}
+                </p>
+                <div className="mt-5 flex justify-between">
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[9px] font-bold text-slate-500">
+                    {item.duration}
+                  </span>
+                  <b className="text-[10px] text-blue-700">
+                    {busy === key ? "Preparing…" : "Start →"}
+                  </b>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {error && <Error text={error} retry={lastAttempt ? () => void start(lastAttempt,"retry") : undefined} busy={Boolean(busy)} />}
+      </Page>
+    );
+
+  if (view === "setup") {
+    const selectedRole = role === "Other" ? customRole.trim() : role;
+    return (
+      <Page
+        title="Set up an Interview"
+        subtitle="Customize the interview type, target role, and experience level."
+      >
+        <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
+            <fieldset>
+              <legend className="text-[10px] font-bold">Interview type</legend>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {types.map((item) => (
+                  <button
+                    key={item.value}
+                    onClick={() => setType(item.value)}
+                    className={`rounded-xl border p-4 text-left ${type === item.value ? "border-blue-600 bg-blue-50 ring-2 ring-blue-100" : "border-slate-200"}`}
+                  >
+                    <strong className="block text-[11px]">{item.label}</strong>
+                    <small className="mt-1 block text-[9px] text-slate-500">
+                      {item.detail}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <div className="mt-6 grid gap-5 sm:grid-cols-3">
+              <label>
+                <b className="text-[10px]">Target role</b>
+                <select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  className="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs"
+                >
+                  {roles.map((item) => (
+                    <option key={item}>{item}</option>
+                  ))}
+                  <option>Other</option>
+                </select>
+                {role === "Other" && (
+                  <input
+                    value={customRole}
+                    onChange={(e) => setCustomRole(e.target.value)}
+                    placeholder="Enter your target role"
+                    className="mt-2 h-11 w-full rounded-lg border border-slate-200 px-3 text-xs"
+                  />
+                )}
+              </label>
+              <label>
+                <b className="text-[10px]">Experience level</b>
+                <select
+                  value={experience}
+                  onChange={(e) => setExperience(e.target.value)}
+                  className="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs"
+                >
+                  <option>Entry level (0–2 years)</option>
+                  <option>Mid-level (3–5 years)</option>
+                  <option>Senior (6–9 years)</option>
+                  <option>Lead / Manager (10+ years)</option>
+                </select>
+              </label>
+              <label>
+                <b className="text-[10px]">Number of questions</b>
+                <select
+                  value={questionCount}
+                  onChange={(e) =>
+                    setQuestionCount(Number(e.target.value) as 5 | 10 | 15 | 20)
+                  }
+                  className="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs"
+                >
+                  <option value={5}>5 questions</option>
+                  <option value={10}>10 questions</option>
+                  <option value={15}>15 questions</option>
+                  <option value={20}>20 questions</option>
+                </select>
+              </label>
+            </div>
+            <label className="mt-5 block">
+              <b className="text-[10px]">
+                Use a saved resume{" "}
+                <span className="font-normal text-slate-400">(optional)</span>
+              </b>
+              <select
+                value={selectedResumeId}
+                onChange={(event) => setSelectedResumeId(event.target.value)}
+                disabled={resumesLoading}
+                className="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs disabled:bg-slate-50"
+              >
+                <option value="">
+                  {resumesLoading
+                    ? "Loading saved resumes…"
+                    : "No resume — generate general questions"}
+                </option>
+                {savedResumes.map((resume) => (
+                  <option key={resume.id} value={resume.id}>
+                    {resume.title}
+                    {resume.target_role ? ` — ${resume.target_role}` : ""}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1.5 block text-[9px] text-slate-500">
+                Selecting a resume lets the AI ask about your actual skills,
+                projects, and experience.
+              </span>
+            </label>
+            <div className="mt-7 flex items-center justify-between rounded-xl bg-slate-50 p-4">
+              <div>
+                <strong className="text-xs">Ready to begin?</strong>
+                <p className="mt-1 text-[9px] text-slate-500">
+                  {questionCount} questions will be generated for your
+                  selections.
+                </p>
+              </div>
+              <button
+                disabled={Boolean(busy) || !selectedRole}
+                onClick={() =>
+                  void start(
+                    {
+                      interview_type: type,
+                      target_role: selectedRole,
+                      experience_level: experience,
+                      question_count: questionCount,
+                      ...(selectedResumeId
+                        ? { resume_id: Number(selectedResumeId) }
+                        : {}),
+                    },
+                    "custom",
+                  )
+                }
+                className="h-11 rounded-lg bg-blue-700 px-6 text-xs font-bold text-white disabled:bg-slate-300"
+              >
+                {busy ? "Preparing…" : "Start interview"}
+              </button>
+            </div>
+            {error && <Error text={error} retry={lastAttempt ? () => void start(lastAttempt,"retry") : undefined} busy={Boolean(busy)} />}
+          </section>
+          <aside className="h-fit rounded-2xl bg-slate-950 p-6 text-white">
+            <p className="text-[9px] font-bold uppercase tracking-wider text-blue-300">
+              Session preview
+            </p>
+            <h3 className="mt-2 text-lg font-bold">
+              {types.find((item) => item.value === type)?.label} Interview
+            </h3>
+            <Preview
+              label="Target role"
+              value={selectedRole || "Not selected"}
+            />
+            <Preview label="Experience" value={experience} />
+            <Preview
+              label="Resume context"
+              value={
+                savedResumes.find(
+                  (resume) => resume.id === Number(selectedResumeId),
+                )?.title ?? "Not selected"
+              }
+            />
+            <Preview label="Questions" value={`${questionCount} questions`} />
+            <Preview label="Format" value="One question at a time" />
+            <Preview label="Feedback" value="Scores and improvement tips" />
+          </aside>
+        </div>
+      </Page>
+    );
+  }
+
+  if (view === "history")
+    return (
+      <Page
+        title="Interview History"
+        subtitle="Resume unfinished sessions and review completed interview feedback."
+      >
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="grid gap-3 md:grid-cols-[1fr_170px_170px_150px]">
+            <label><span className="sr-only">Search interview history</span><input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Search by role, type, or resume…" className="h-10 w-full rounded-lg border border-slate-200 px-3 text-xs outline-none focus:border-blue-400" /></label>
+            <label><span className="sr-only">Filter by status</span><select value={historyStatus} onChange={(event) => setHistoryStatus(event.target.value as "all" | "in_progress" | "completed")} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="all">All statuses</option><option value="in_progress">In progress</option><option value="completed">Completed</option></select></label>
+            <label><span className="sr-only">Filter by interview type</span><select value={historyType} onChange={(event) => setHistoryType(event.target.value as "all" | InterviewType)} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="all">All types</option>{types.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+            <label><span className="sr-only">Sort interview history</span><select value={historySort} onChange={(event) => setHistorySort(event.target.value as "newest" | "oldest")} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+          </div>
+          <div className="mt-3 flex items-center justify-between text-[9px] text-slate-500"><span>Showing {filteredSessions.length} of {sessions.length} sessions</span>{(historySearch || historyStatus !== "all" || historyType !== "all" || historySort !== "newest") && <button type="button" onClick={() => { setHistorySearch(""); setHistoryStatus("all"); setHistoryType("all"); setHistorySort("newest"); }} className="font-bold text-blue-700">Clear filters</button>}</div>
+        </section>
+        <History
+          sessions={filteredSessions}
+          loading={loading}
+          error={historyError}
+          all
+          onDeleted={deleteSession}
+          emptyText={sessions.length ? "No interview sessions match your current filters." : undefined}
+        />
+      </Page>
+    );
 
   return (
     <div className="space-y-5">
-      <section>
-        <div className="flex items-end justify-between gap-4">
-          <div><p className="text-[9px] font-bold uppercase tracking-[0.16em] text-blue-600">Quick Practice</p><h2 className="mt-1 text-lg font-bold">Start with one click</h2><p className="mt-1 text-[10px] text-slate-500">Choose a focused practice session using ready-made settings.</p></div>
-          <span className="hidden text-[9px] font-semibold text-slate-400 sm:block">Questions are generated when you begin</span>
-        </div>
-        <div className="mt-3 grid gap-3 md:grid-cols-3">
-          {quickPractices.map((practice) => {
-            const key = `quick-${practice.interview_type}`;
-            return <button key={practice.title} type="button" disabled={Boolean(busyKey)} onClick={() => void createSession(practice, key)} className="group flex min-h-28 items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md disabled:cursor-wait disabled:opacity-60"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-blue-50 text-xs font-black text-blue-700 group-hover:bg-blue-700 group-hover:text-white">{practice.icon}</span><span className="min-w-0 flex-1"><strong className="block text-xs">{practice.title}</strong><small className="mt-1 block text-[9px] leading-4 text-slate-500">{practice.detail}</small><span className="mt-2 inline-flex rounded-full bg-slate-100 px-2 py-1 text-[8px] font-bold text-slate-500">{busyKey === key ? "Preparing…" : practice.duration}</span></span><span className="text-lg text-slate-300 group-hover:text-blue-700">›</span></button>;
-          })}
+      <section className="rounded-2xl bg-gradient-to-r from-slate-950 to-blue-950 p-6 text-white shadow-sm sm:p-8">
+        <p className="text-[9px] font-bold uppercase tracking-[.18em] text-blue-300">
+          AI-guided interview preparation
+        </p>
+        <h2 className="mt-2 text-2xl font-bold">
+          Practice with purpose. Interview with confidence.
+        </h2>
+        <p className="mt-2 max-w-2xl text-xs leading-5 text-slate-300">
+          Choose a quick session or build a tailored interview for your target
+          role and experience level.
+        </p>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <Link
+            href="/employee/interview-practice/setup"
+            className="rounded-lg bg-blue-600 px-5 py-3 text-xs font-bold"
+          >
+            Start new interview
+          </Link>
+          <Link
+            href="/employee/interview-practice/quick"
+            className="rounded-lg border border-white/20 bg-white/10 px-5 py-3 text-xs font-bold"
+          >
+            Quick practice
+          </Link>
         </div>
       </section>
-
-      <section className="grid gap-5 xl:grid-cols-[1fr_340px]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
-          <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-blue-600">Custom session</p><h2 className="mt-1 text-xl font-bold">Set up your interview</h2><p className="mt-1 text-[10px] text-slate-500">Choose the format, role and experience level for tailored questions.</p>
-          <fieldset className="mt-6"><legend className="text-[10px] font-bold text-slate-700">Interview type</legend><div className="mt-3 grid gap-3 sm:grid-cols-2">{interviewTypes.map((item) => <button key={item.value} type="button" onClick={() => setType(item.value)} aria-pressed={type === item.value} className={`rounded-xl border p-4 text-left transition ${type === item.value ? "border-blue-600 bg-blue-50 ring-2 ring-blue-100" : "border-slate-200 hover:border-blue-200"}`}><strong className="block text-[11px]">{item.label}</strong><small className="mt-1 block text-[9px] text-slate-500">{item.detail}</small></button>)}</div></fieldset>
-          <div className="mt-6 grid gap-5 sm:grid-cols-2"><label><span className="text-[10px] font-bold text-slate-700">Target role</span><select value={role} onChange={(event) => setRole(event.target.value)} className="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs outline-none focus:border-blue-400">{targetRoles.map((targetRole) => <option key={targetRole}>{targetRole}</option>)}<option>Other</option></select>{role === "Other" && <input value={customRole} onChange={(event) => setCustomRole(event.target.value)} placeholder="Enter your target role" className="mt-2 h-11 w-full rounded-lg border border-slate-200 px-3 text-xs outline-none focus:border-blue-400" />}</label><label><span className="text-[10px] font-bold text-slate-700">Experience level</span><select value={experience} onChange={(event) => setExperience(event.target.value)} className="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs outline-none focus:border-blue-400"><option>Entry level (0–2 years)</option><option>Mid-level (3–5 years)</option><option>Senior (6–9 years)</option><option>Lead / Manager (10+ years)</option></select></label></div>
-          <div className="mt-7 flex flex-col gap-4 rounded-xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><strong className="block text-[11px]">Ready to begin?</strong><p className="mt-1 text-[9px] text-slate-500">8 questions · Approximately 20 minutes</p></div><button type="button" disabled={Boolean(busyKey) || (role === "Other" && !customRole.trim())} onClick={startCustomSession} className="h-11 rounded-lg bg-blue-700 px-6 text-xs font-bold text-white shadow-md hover:bg-blue-800 disabled:bg-slate-300">{busyKey === "custom" ? "Preparing questions…" : "Start interview"}</button></div>
-          {error && <p role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[10px] font-semibold text-red-700">{error}</p>}
-        </div>
-        <aside className="h-fit rounded-2xl bg-slate-950 p-6 text-white shadow-sm"><p className="text-[9px] font-bold uppercase tracking-wider text-blue-300">How it works</p><h2 className="mt-2 text-lg font-bold">Focused practice, useful feedback</h2><div className="mt-5 space-y-5">{[["1", "Choose a session", "Use Quick Practice or customize it."], ["2", "Answer each question", "Structure responses with the STAR method."], ["3", "Review your feedback", "See scores and clear improvement tips."]].map(([number, title, detail]) => <div key={number} className="flex gap-3"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-blue-700 text-xs font-bold">{number}</span><div><strong className="block text-xs">{title}</strong><p className="mt-1 text-[9px] leading-4 text-slate-400">{detail}</p></div></div>)}</div></aside>
-      </section>
-
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div><p className="text-[9px] font-bold uppercase tracking-[0.16em] text-blue-600">Practice history</p><h2 className="mt-1 text-lg font-bold">Recent Practice</h2><p className="mt-1 text-[10px] text-slate-500">Resume unfinished sessions or review feedback from completed interviews.</p></div>
-          {sessions.length > 0 && <span className="w-fit rounded-full bg-blue-50 px-2.5 py-1 text-[9px] font-bold text-blue-700">{sessions.length} {sessions.length === 1 ? "session" : "sessions"}</span>}
-        </div>
-
-        {historyLoading ? (
-          <div className="grid min-h-40 place-items-center text-xs font-semibold text-slate-400">Loading recent practice…</div>
-        ) : historyError ? (
-          <div className="px-6 py-10 text-center"><p className="text-xs font-semibold text-red-600">{historyError}</p><button type="button" onClick={() => window.location.reload()} className="mt-3 text-[10px] font-bold text-blue-700">Try again</button></div>
-        ) : sessions.length === 0 ? (
-          <div className="grid min-h-48 place-items-center px-5 text-center"><div><span className="mx-auto grid size-11 place-items-center rounded-xl bg-blue-50 text-lg text-blue-700">▶</span><h3 className="mt-4 text-sm font-bold">No practice sessions yet</h3><p className="mt-1 text-[10px] text-slate-500">Start a Quick Practice session and your progress will appear here.</p></div></div>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {sessions.slice(0, 5).map((session) => {
-              const completed = session.status === "completed";
-              const progress = session.questions.length ? Math.round((session.current_index / session.questions.length) * 100) : 0;
-              const date = new Date(session.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-              const typeLabel = interviewTypes.find((item) => item.value === session.interview_type)?.label ?? "Interview";
-              return <article key={session.id} className="grid gap-4 px-5 py-4 transition hover:bg-slate-50/70 sm:grid-cols-[1fr_150px_110px] sm:items-center sm:px-6">
-                <div className="flex min-w-0 items-center gap-3"><span className={`grid size-10 shrink-0 place-items-center rounded-xl text-xs font-bold ${completed ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}>{completed ? "✓" : "▶"}</span><div className="min-w-0"><strong className="block truncate text-xs">{typeLabel} · {session.target_role}</strong><span className="mt-1 block text-[9px] text-slate-500">{session.experience_level} · {date}</span></div></div>
-                <div>{completed ? <div><span className="text-[9px] font-semibold text-slate-400">Final score</span><strong className="mt-1 block text-lg text-emerald-700">{session.overall_score ?? "—"}<small className="text-[9px] text-slate-400">/100</small></strong></div> : <div><div className="flex justify-between text-[9px]"><span className="font-semibold text-slate-500">In progress</span><b>{progress}%</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-600" style={{ width: `${progress}%` }} /></div></div>}</div>
-                <button type="button" onClick={() => router.push(`/employee/interview-practice/${session.id}`)} className={`h-9 rounded-lg px-4 text-[10px] font-bold ${completed ? "border border-slate-200 bg-white text-slate-700 hover:border-blue-300" : "bg-blue-700 text-white hover:bg-blue-800"}`}>{completed ? "Review" : "Resume"}</button>
-              </article>;
-            })}
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold">
+              Choose how you want to practice
+            </h2>
+            <p className="mt-1 text-[10px] text-slate-500">
+              Start quickly, customize an interview, or continue from your
+              history.
+            </p>
           </div>
-        )}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[9px] text-slate-500">
+            <span>
+              <b className="text-slate-900">{stats.completed}</b> completed
+            </span>
+            <span>
+              <b className="text-slate-900">
+                {stats.average ? `${stats.average}%` : "—"}
+              </b>{" "}
+              average
+            </span>
+            <span>
+              <b className="text-slate-900">{stats.active}</b> in progress
+            </span>
+          </div>
+        </div>
+        <nav
+          className="grid divide-y divide-slate-100 sm:grid-cols-3 sm:divide-x sm:divide-y-0"
+          aria-label="Interview practice pages"
+        >
+          <PracticeButton
+            href="/employee/interview-practice/quick"
+            icon="⚡"
+            title="Quick Practice"
+            detail="Start a short preset session"
+          />
+          <PracticeButton
+            href="/employee/interview-practice/setup"
+            icon="◎"
+            title="Interview Preparation"
+            detail="Create a tailored interview"
+          />
+          <PracticeButton
+            href="/employee/interview-practice/history"
+            icon="↗"
+            title="Interview History"
+            detail="Resume or review sessions"
+          />
+        </nav>
+      </section>
+      <section>
+        <div className="mb-3 flex items-end justify-between">
+          <div>
+            <p className="text-[9px] font-bold uppercase tracking-wider text-blue-600">
+              Latest activity
+            </p>
+            <h2 className="mt-1 text-lg font-bold">Recent Practice</h2>
+          </div>
+          <Link
+            href="/employee/interview-practice/history"
+            className="text-[10px] font-bold text-blue-700"
+          >
+            View all history →
+          </Link>
+        </div>
+        <History
+          sessions={sessions.slice(0, 3)}
+          loading={loading}
+          error={historyError}
+          onDeleted={deleteSession}
+        />
       </section>
     </div>
+  );
+}
+
+function Page({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-5">
+      <div className="flex items-end justify-between">
+        <div>
+          <Link
+            href="/employee/interview-practice"
+            className="text-[10px] font-bold text-blue-700"
+          >
+            ← Interview Practice
+          </Link>
+          <h2 className="mt-2 text-2xl font-bold">{title}</h2>
+          <p className="mt-1 text-xs text-slate-500">{subtitle}</p>
+        </div>
+        <Link
+          href="/employee/interview-practice/history"
+          className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-bold text-slate-600"
+        >
+          View history
+        </Link>
+      </div>
+      {children}
+    </div>
+  );
+}
+function History({
+  sessions,
+  loading,
+  error,
+  all = false,
+  onDeleted,
+  emptyText,
+}: {
+  sessions: InterviewSession[];
+  loading: boolean;
+  error: string;
+  all?: boolean;
+  onDeleted?: (sessionId: number) => Promise<void>;
+  emptyText?: string;
+}) {
+  const router = useRouter();
+  if (loading) return <Empty text="Loading practice history…" />;
+  if (error) return <Error text={error} />;
+  if (!sessions.length)
+    return (
+      <Empty text={emptyText ?? "No practice sessions yet. Start an interview to see it here."} />
+    );
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="divide-y divide-slate-100">
+        {(all ? sessions : sessions.slice(0, 3)).map((item) => {
+          const done = item.status === "completed";
+          const progress = item.questions.length
+            ? Math.round((item.current_index / item.questions.length) * 100)
+            : 0;
+          return (
+            <article
+              key={item.id}
+              className="grid gap-4 px-5 py-4 hover:bg-slate-50 sm:grid-cols-[1fr_150px_180px] sm:items-center"
+            >
+              <div>
+                <strong className="text-xs">
+                  {
+                    types.find((type) => type.value === item.interview_type)
+                      ?.label
+                  }{" "}
+                  · {item.target_role}
+                </strong>
+                <span className="mt-1 block text-[9px] text-slate-500">
+                  {item.experience_level} ·{" "}
+                  {new Date(item.created_at).toLocaleDateString()}
+                </span>
+                {item.resume_title && (
+                  <span className="mt-1 block text-[9px] font-semibold text-blue-700">
+                    Resume: {item.resume_title}
+                  </span>
+                )}
+              </div>
+              <div>
+                {done ? (
+                  <strong className="text-lg text-emerald-700">
+                    {item.overall_score ?? "—"}
+                    <small className="text-[9px] text-slate-400">/100</small>
+                  </strong>
+                ) : (
+                  <>
+                    <div className="flex justify-between text-[9px]">
+                      <span>In progress</span>
+                      <b>{progress}%</b>
+                    </div>
+                    <div className="mt-2 h-1.5 rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-blue-600"
+                        style={{ width: `${progress}%` }}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="flex justify-end gap-2"><button onClick={() => router.push(`/employee/interview-practice/${item.id}`)} className={`h-9 rounded-lg px-4 text-[10px] font-bold ${done ? "border border-slate-200" : "bg-blue-700 text-white"}`}>{done ? "Review" : "Resume"}</button>{all && onDeleted && <button type="button" onClick={() => void onDeleted(item.id)} className="h-9 rounded-lg border border-red-100 px-3 text-[10px] font-bold text-red-600 hover:bg-red-50">Delete</button>}</div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+function PracticeButton({
+  href,
+  icon,
+  title,
+  detail,
+}: {
+  href: string;
+  icon: string;
+  title: string;
+  detail: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex items-center gap-3 px-5 py-4 transition hover:bg-blue-50/60"
+    >
+      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-blue-50 text-sm font-bold text-blue-700 group-hover:bg-blue-700 group-hover:text-white">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <strong className="block text-xs">{title}</strong>
+        <small className="mt-1 block text-[9px] text-slate-500">{detail}</small>
+      </span>
+      <span className="text-lg text-slate-300 group-hover:text-blue-700">
+        ›
+      </span>
+    </Link>
+  );
+}
+function Preview({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="mt-4 flex justify-between gap-4 border-b border-white/10 pb-3">
+      <span className="text-[9px] text-slate-400">{label}</span>
+      <strong className="text-right text-[10px]">{value}</strong>
+    </div>
+  );
+}
+function Empty({ text }: { text: string }) {
+  return (
+    <div className="grid min-h-36 place-items-center rounded-2xl border border-slate-200 bg-white px-6 text-center text-xs text-slate-500">
+      {text}
+    </div>
+  );
+}
+function Error({ text, retry, busy=false }: { text: string; retry?:()=>void; busy?:boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-3 text-[10px] font-semibold text-red-700"><span>{text}</span>{retry&&<button type="button" disabled={busy} onClick={retry} className="shrink-0 rounded-lg border border-red-200 bg-white px-3 py-2 font-bold disabled:opacity-50">{busy?"Retrying…":"Retry"}</button>}</div>
   );
 }
